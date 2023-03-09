@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+DELAY=${DELAY:=2}
+SENSOR_PATH=${SENSOR_PATH:=/sys/bus/iio/devices/iio:device0/in_illuminance_raw}
+BACKLIGHT_DIR=${BACKLIGHT_DIR:=$(dirname /sys/class/backlight/*/.)}
+
+if [ -d "$BACKLIGHT_DIR" ]
+then
+    echo "Using backlight at $BACKLIGHT_DIR"
+    max=$(cat "$BACKLIGHT_DIR/max_brightness")
+    sensitivity=$((max/90))
+    treshold=$((max/4))
+    panOut=$((sensitivity/4))
+    min=$((max/10))
+
+    echo "sensitivity: $sensitivity treshold: $treshold panOut: $panOut DELAY: $DELAY"
+else
+    echo "Could not find any backlights"
+    echo 'Set "BACKLIGHT_DIR" envvar in the unit file'
+    exit 1
+fi
+
+lastSet=0
+while true
+do  
+    updated=0
+    backlight=$(cat "$BACKLIGHT_DIR/brightness")
+    sensor=$(cat "$SENSOR_PATH")
+    echo "SensorRaw : $sensor"
+    [ "$sensor" -lt 0 ] && sensor=1
+
+    target=$backlight
+    echo "sensorMinst0 : $sensor"
+    echo "target: $target , min: $min , max $max"
+    
+    if [[ $target -gt $lastSet && $lastSet != 0 ]]
+    then 
+        justeringUpp=$((target - lastSet))
+        justeringNer=0
+    elif [[ $target -lt $lastSet && $lastSet != 0 ]]
+    then 
+        justeringNer=$((lastSet - target))
+        justeringUpp=0
+    else
+        justeringNer=0
+        justeringUpp=0
+    fi
+    echo "justeringNer: $justeringNer"
+    echo "justeringUpp: $justeringUpp"
+    
+    if [ "$sensor" -lt "$treshold" ]
+    then
+        sensor=$(((sensor*panOut)+min))
+        echo "Step: sensorThreshold $sensor"
+    fi
+
+    if [ "$sensor" -gt $((backlight+sensitivity)) ]
+    then
+        updated=1
+        target=$((target+(sensitivity/2)+justeringUpp-justeringNer))
+        echo "Step: sensorGreater $target"
+    elif [ "$sensor" -lt $((backlight-sensitivity)) ]
+    then
+        updated=1
+        target=$((target-(sensitivity/2)+justeringUpp-justeringNer))
+        echo "Step: sensorLess $target"
+    fi
+
+    if [ "$target" -gt "$max" ]
+    then
+        target=$max
+        echo "Step: targetMax $target"
+    fi
+
+    if [ "$target" -lt 1 ]
+    then
+        target=$((min+justeringUpp-justeringNer))
+        echo "Step: targetLessThan1 $target"
+    fi
+
+    if [ $updated -eq 1 ]
+    then
+        echo "$target" > "$BACKLIGHT_DIR/brightness"
+        lastSet="$target"
+        echo "lastSet: $lastSet"
+    fi
+
+    sleep "$DELAY"
+done
